@@ -1,0 +1,36 @@
+---
+description: 每次改完 claude_code_copy 都提交并直接推到 main
+alwaysApply: true
+---
+
+# 自动提交并推到 main
+
+仓库是 `claude_code_copy`，远程是 `https://github.com/zhangsscc99/claude_code_copy.git`。这里的小改动做完就提交并推送，不用再等用户说「提交」。这条覆盖「先问过再 commit」的通用习惯。
+
+只操作这个仓库。不要提交、不要推送上层目录 `claude-code-source-code-main`。
+
+一次小改动做完后：
+
+1. 在仓库根目录并行看 `git status`、`git diff`、`git log -5 --oneline`。
+2. 只暂存这次改动的文件。不要暂存 `.env`、凭据、`node_modules`。
+3. 没有改动就停，不要做空提交。
+4. 用 heredoc 写 1 到 2 句说明为什么改，然后提交。
+5. 留在 `main`，执行 `git push origin main`。不要开功能分支。
+
+禁止：
+
+- 对 `main` 使用 `--force` 或 `--force-with-lease`
+- `--no-verify` 或其他跳过钩子的参数
+- 修改 `git config`
+- `git commit --amend`，除非用户明确要求，且这次对话里的提交还没推送、钩子也没拒绝过
+
+钩子拒绝时，修好后再新建一次提交。推送失败就报告错误，保留本地提交，不要强推。
+
+```bash
+git commit -m "$(cat <<'EOF'
+说明这次改动为什么需要。
+
+EOF
+)"
+git push origin main
+```
