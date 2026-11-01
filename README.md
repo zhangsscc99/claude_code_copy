@@ -36,7 +36,7 @@ npm run dev -- --permission-mode plan
 npm test
 ```
 
-单轮模式（`-p`）如果当前终端不能提问，改文件会被拒绝。要让它改文件，加上 `--permission-mode acceptEdits`。要让它跑命令，加上 `--dangerously-skip-permissions`。交互模式里，读文件直接执行，改文件和命令会先问你。
+单轮模式（`-p`）如果算出来要提问，会拒绝。要让它改工作区内的文件，加上 `--permission-mode acceptEdits`。要让分类器代替提问，加上 `--permission-mode auto`。交互模式里，工作区内的读和搜索直接执行，改文件和命令会先问你。规则和 `auto` 的细节在 `docs/permission-harness.md`。
 
 ## 现在有什么
 
@@ -44,7 +44,7 @@ npm test
 | --- | --- |
 | `src/agent/loop.ts` | 模型 → 工具 → 再问模型 |
 | `src/tools/builtin.ts` | `read_file` `write_file` `edit_file` `glob` `grep` `bash` |
-| `src/permissions.ts` | `default` `acceptEdits` `plan` `bypass` |
+| `src/permissions.ts` | `default` `acceptEdits` `plan` `bypassPermissions` `dontAsk` `auto` |
 | `src/llm/client.ts` | Anthropic，以及 OpenAI 兼容接口 |
 | `.copy-agent/session.jsonl` | 这次运行的会话记录，已加入 gitignore |
 

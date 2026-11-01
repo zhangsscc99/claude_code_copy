@@ -31,14 +31,14 @@ test('acceptEdits allows writes and still asks before bash', async () => {
   assert.deepEqual(asked, ['bash'])
 })
 
-test('always remembers the tool for the rest of the session', async () => {
+test('session allow remembers the command prefix', async () => {
   let asked = 0
   const gate = new PermissionGate('default', async () => {
     asked += 1
-    return 'always'
+    return 'session'
   })
-  const first = await gate.check(tools.bash!, { command: 'ls' })
-  const second = await gate.check(tools.bash!, { command: 'pwd' })
+  const first = await gate.check(tools.bash!, { command: 'npm test' })
+  const second = await gate.check(tools.bash!, { command: 'npm test --watch' })
   assert.equal(first.allowed, true)
   assert.equal(second.allowed, true)
   assert.equal(asked, 1)

@@ -2,8 +2,18 @@ import { stat } from 'node:fs/promises'
 import readline from 'node:readline'
 import { runAgent } from './agent/loop.js'
 import { loadConfig, loadDotEnv, missingKeyMessage, type Config } from './config.js'
+import { createAutoClassifier } from './permissions/classify.js'
+import { loadPermissionSettings, type LoadedSettings } from './permissions/settings.js'
+import { parseRule, type PermissionRule } from './permissions/rules.js'
+import {
+  isPermissionMode,
+  normalizePermissionMode,
+  PermissionGate,
+  type AskFn,
+  type PermissionAnswer,
+  type PermissionMode,
+} from './permissions.js'
 import { createLlmClient } from './llm/client.js'
-import { isPermissionMode, PermissionGate, type PermissionAnswer } from './permissions.js'
 import { buildSystemPrompt } from './prompt.js'
 import { createBuiltinTools } from './tools/builtin.js'
 import { appendTranscript } from './transcript.js'
@@ -19,6 +29,8 @@ interface Args {
   model?: string
   provider?: string
   permissionMode?: string
+  allowedTools: string[]
+  disallowedTools: string[]
   maxTurns?: number
   dangerouslySkipPermissions: boolean
 }
@@ -38,28 +50,40 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const cwdInfo = await stat(cwd).catch(() => undefined)
   if (!cwdInfo?.isDirectory()) throw new Error(`不是目录：${cwd}`)
   loadDotEnv(cwd)
+  const settings = loadPermissionSettings(cwd)
   const config = loadConfig(cwd)
+  if (!args.permissionMode && !args.dangerouslySkipPermissions && !process.env.AGENT_PERMISSION_MODE && settings.defaultMode) {
+    config.permissionMode = settings.defaultMode
+  }
   applyArgs(config, args)
+  if (config.permissionMode === 'bypassPermissions' && settings.disableBypass) {
+    throw new Error('设置关闭了 bypassPermissions。')
+  }
+  if (config.permissionMode === 'auto' && settings.disableAuto) {
+    throw new Error('设置关闭了 auto。')
+  }
   if (!config.apiKey) throw new Error(missingKeyMessage())
 
-  if (config.permissionMode === 'bypass') {
-    process.stderr.write('权限模式是 bypass：写文件和命令不会再询问。\n')
+  if (config.permissionMode === 'bypassPermissions') {
+    process.stderr.write('权限模式是 bypassPermissions：通过自检后不再询问。拒绝规则、ask 规则和安全路径仍然有效。\n')
   }
 
   const tools = createBuiltinTools()
   const llm = createLlmClient(config)
   const system = buildSystemPrompt(config.cwd)
   const history: Message[] = []
+  const rules = [
+    ...settings.rules,
+    ...cliRules(args.allowedTools, 'allow'),
+    ...cliRules(args.disallowedTools, 'deny'),
+  ]
 
   if (args.print !== undefined) {
     const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY)
     const rl = interactive
       ? readline.createInterface({ input: process.stdin, output: process.stdout })
       : undefined
-    const gate = new PermissionGate(
-      config.permissionMode,
-      rl ? (tool, input) => askOn(rl, tool.name, input) : denyAsk,
-    )
+    const gate = createGate(config, settings, rules, rl ? (tool, input, detail) => askOn(rl, tool.name, input, detail) : denyAsk, !interactive)
     try {
       const code = await runTurn({ config, tools, llm, system, history, gate, userText: args.print })
       if (code !== 0) process.exitCode = code
@@ -69,7 +93,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return
   }
 
-  await repl({ config, tools, llm, system, history })
+  await repl({ config, settings, rules, tools, llm, system, history })
 }
 
 function applyArgs(config: Config, args: Args): void {
@@ -91,17 +115,19 @@ function applyArgs(config: Config, args: Args): void {
   if (args.model) config.model = args.model
   if (args.maxTurns) config.maxTurns = args.maxTurns
   if (args.permissionMode) {
-    if (!isPermissionMode(args.permissionMode)) {
-      throw new Error('--permission-mode 只能是 default、acceptEdits、plan、bypass')
+    if (!isPermissionMode(args.permissionMode) && args.permissionMode !== 'bypass') {
+      throw new Error('--permission-mode 只能是 default、acceptEdits、plan、bypassPermissions、dontAsk、auto')
     }
-    config.permissionMode = args.permissionMode
+    config.permissionMode = normalizePermissionMode(args.permissionMode) ?? 'default'
   } else if (args.dangerouslySkipPermissions) {
-    config.permissionMode = 'bypass'
+    config.permissionMode = 'bypassPermissions'
   }
 }
 
 async function repl(options: {
   config: Config
+  settings: LoadedSettings
+  rules: PermissionRule[]
   tools: Tool[]
   llm: ReturnType<typeof createLlmClient>
   system: string
@@ -112,7 +138,7 @@ async function repl(options: {
   rl.on('close', () => {
     closed = true
   })
-  const gate = new PermissionGate(options.config.permissionMode, (tool, input) => askOn(rl, tool.name, input))
+  const gate = createGate(options.config, options.settings, options.rules, (tool, input, detail) => askOn(rl, tool.name, input, detail), false)
   process.stdout.write(welcome(options.config))
   try {
     while (!closed) {
@@ -135,12 +161,14 @@ async function repl(options: {
       }
       if (line.startsWith('/mode')) {
         const next = line.split(/\s+/)[1] ?? ''
-        if (!isPermissionMode(next)) {
-          process.stdout.write('用法：/mode default|acceptEdits|plan|bypass\n')
+        if (!isPermissionMode(next) && next !== 'bypass') {
+          process.stdout.write('用法：/mode default|acceptEdits|plan|bypassPermissions|dontAsk|auto\n')
           continue
         }
-        gate.setMode(next)
-        options.config.permissionMode = next
+        const mode = normalizePermissionMode(next)
+        if (!mode) continue
+        gate.setMode(mode)
+        options.config.permissionMode = mode
         process.stdout.write(`权限模式：${next}\n`)
         continue
       }
@@ -203,19 +231,42 @@ async function askOn(
   rl: readline.Interface,
   name: string,
   input: Record<string, unknown>,
+  detail: { reason: string; saveRule: string },
 ): Promise<PermissionAnswer> {
   const answer = (await question(
     rl,
-    `\n允许 ${name}？\n${preview(name, input)}\n[y]允许  [n]拒绝  [a]本会话内这个工具都允许：`,
+    `\n${detail.reason}\n${name} ${preview(name, input)}\n保存为 ${detail.saveRule}\n[1/y] 允许一次  [2] 本会话允许  [3] 写入本地设置  [4/n] 拒绝：`,
   )).trim().toLowerCase()
-  if (answer === 'y' || answer === 'yes') return 'allow'
-  if (answer === 'a' || answer === 'always') return 'always'
+  if (answer === '1' || answer === 'y' || answer === 'yes') return 'once'
+  if (answer === '2') return 'session'
+  if (answer === '3') return 'local'
   return 'deny'
 }
 
 function denyAsk(tool: Tool): Promise<PermissionAnswer> {
-  process.stderr.write(`非交互模式已拒绝 ${tool.name}。需要改文件时加 --permission-mode acceptEdits，需要跑命令时加 bypass。\n`)
+  process.stderr.write(`非交互模式已拒绝 ${tool.name}。需要规则、acceptEdits、auto 或 bypassPermissions。\n`)
   return Promise.resolve('deny')
+}
+
+function createGate(
+  config: Config,
+  settings: LoadedSettings,
+  rules: PermissionRule[],
+  ask: AskFn,
+  headless: boolean,
+): PermissionGate {
+  return new PermissionGate(config.permissionMode, ask, {
+    cwd: config.cwd,
+    rules,
+    autoAllow: settings.autoAllow,
+    autoSoftDeny: settings.autoSoftDeny,
+    classifier: createAutoClassifier(config),
+    canPrompt: !headless,
+  })
+}
+
+function cliRules(specs: string[], behavior: 'allow' | 'deny'): PermissionRule[] {
+  return specs.flatMap((spec) => spec.split(',')).map((spec) => spec.trim()).filter(Boolean).map((spec) => parseRule(spec, behavior, 'cli'))
 }
 
 function question(rl: readline.Interface, prompt: string): Promise<string> {
@@ -244,7 +295,7 @@ function slashHelp(): string {
   return [
     '/help     显示命令',
     '/tools    列出工具',
-    '/mode     default | acceptEdits | plan | bypass',
+    '/mode     default | acceptEdits | plan | bypassPermissions | dontAsk | auto',
     '/clear    清空这次会话',
     '/exit     退出',
     '',
@@ -264,18 +315,20 @@ function helpText(): string {
   --cwd <目录>                工作目录，默认当前目录
   --provider anthropic|openai
   --model <模型名>
-  --permission-mode <模式>    default | acceptEdits | plan | bypass
+  --permission-mode <模式>    default | acceptEdits | plan | bypassPermissions | dontAsk | auto
+  --allowed-tools <规则>      例如 Bash(npm test:*)，可重复或用逗号分隔
+  --disallowed-tools <规则>   例如 Bash(rm:*)
   --max-turns <次数>          一轮里模型最多调用几次，默认 25
   --dangerously-skip-permissions
   -h, --help
   -v, --version
 
-环境变量见 .env.example。读文件默许，改文件和跑命令会先问你。
+环境变量见 .env.example。规则见 docs/permission-harness.md。
 `
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { help: false, version: false, dangerouslySkipPermissions: false }
+  const args: Args = { help: false, version: false, dangerouslySkipPermissions: false, allowedTools: [], disallowedTools: [] }
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]
     const next = () => {
@@ -307,6 +360,12 @@ function parseArgs(argv: string[]): Args {
         break
       case '--permission-mode':
         args.permissionMode = next()
+        break
+      case '--allowed-tools':
+        args.allowedTools.push(next())
+        break
+      case '--disallowed-tools':
+        args.disallowedTools.push(next())
         break
       case '--max-turns':
         args.maxTurns = Number(next())

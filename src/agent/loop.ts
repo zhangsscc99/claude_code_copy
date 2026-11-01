@@ -70,6 +70,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     const calls = assistant.content.filter((block): block is ToolUseBlock => block.type === 'tool_use')
     if (calls.length === 0) return { history, turns: turn, stopReason: 'end_turn' }
 
+    options.permissions.setTranscript(transcriptOf(history))
+
     const results: ToolResultBlock[] = []
     for (const call of calls) results.push(await executeToolCall(call, options))
     history.push({ role: 'user', content: results })
@@ -106,4 +108,14 @@ function errorResult(id: string, content: string): ToolResultBlock {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function transcriptOf(messages: Message[]): string {
+  return messages.map((message) => {
+    const text = message.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n')
+    return `${message.role}: ${text}`
+  }).join('\n').slice(-20_000)
 }

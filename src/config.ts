@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { isPermissionMode, type PermissionMode } from './permissions.js'
+import { normalizePermissionMode, type PermissionMode } from './permissions.js'
 
 export type Provider = 'anthropic' | 'openai'
 
@@ -54,9 +54,9 @@ export function loadConfig(cwd: string): Config {
     provider = 'anthropic'
   }
 
-  const modeValue = process.env.AGENT_PERMISSION_MODE?.trim() || 'default'
-  if (!isPermissionMode(modeValue)) {
-    throw new Error('AGENT_PERMISSION_MODE 只能是 default、acceptEdits、plan、bypass')
+  const modeValue = normalizePermissionMode(process.env.AGENT_PERMISSION_MODE?.trim() || 'default')
+  if (!modeValue) {
+    throw new Error('AGENT_PERMISSION_MODE 只能是 default、acceptEdits、plan、bypassPermissions、dontAsk、auto')
   }
 
   const maxTurns = numberFromEnv('AGENT_MAX_TURNS', 25)
