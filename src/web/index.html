@@ -4,45 +4,56 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ccc</title>
-    <link rel="stylesheet" href="/app.css" />
+    <link rel="stylesheet" href="/dsh-tokens.css" />
+    <link rel="stylesheet" href="/dsh-shell.css" />
   </head>
   <body>
     <div class="frame">
-      <aside class="sidebar">
-        <div class="brand">
-          <span class="mark" aria-hidden="true"></span>
-          <span class="brand-name">ccc</span>
-        </div>
-        <button class="new-chat" id="new-chat" type="button">新对话</button>
-        <label class="field">
-          <span>权限</span>
-          <select id="mode">
-            <option value="default">default</option>
-            <option value="acceptEdits">acceptEdits</option>
-            <option value="plan">plan</option>
-            <option value="auto">auto</option>
-            <option value="dontAsk">dontAsk</option>
-            <option value="bypassPermissions">bypassPermissions</option>
-          </select>
-        </label>
-        <div class="side-meta">
-          <div class="meta-label">工作目录</div>
-          <div class="meta-value" id="cwd"></div>
-          <div class="meta-label">模型</div>
-          <div class="meta-value" id="model"></div>
+      <aside class="sidebarCol">
+        <div class="sidebar">
+          <div class="logoRow">
+            <span class="brandMark" aria-hidden="true"></span>
+            <span class="brandName">ccc</span>
+          </div>
+          <button id="new-chat" class="newChat" type="button">新对话</button>
+          <div class="sessionList">
+            <button class="sessionItem" type="button" aria-current="true">当前会话</button>
+          </div>
+          <label class="modeField">
+            <span>权限</span>
+            <select id="mode">
+              <option value="default">default</option>
+              <option value="acceptEdits">acceptEdits</option>
+              <option value="plan">plan</option>
+              <option value="auto">auto</option>
+              <option value="dontAsk">dontAsk</option>
+              <option value="bypassPermissions">bypassPermissions</option>
+            </select>
+          </label>
+          <div class="workspace">
+            <div id="cwd"></div>
+            <div id="model"></div>
+          </div>
         </div>
       </aside>
-      <main class="stage">
-        <header class="topbar">
-          <div class="top-title">对话</div>
-          <div class="top-status" id="status">就绪</div>
-        </header>
-        <section class="transcript" id="transcript" aria-live="polite"></section>
-        <form class="composer" id="composer">
-          <textarea id="input" rows="1" placeholder="描述要做的修改，回车发送"></textarea>
-          <button id="send" type="submit">发送</button>
-        </form>
-      </main>
+      <section class="centerCol">
+        <div class="mainPanel">
+          <header class="topbar">
+            <div>对话</div>
+            <div id="status">就绪</div>
+          </header>
+          <section id="transcript" class="transcript"></section>
+          <form id="composer" class="composer">
+            <textarea
+              id="input"
+              class="composerInput"
+              rows="1"
+              placeholder="描述要做的修改，回车发送，Shift+回车换行"
+            ></textarea>
+            <button id="send" class="send" type="submit">发送</button>
+          </form>
+        </div>
+      </section>
     </div>
     <script src="/app.js"></script>
   </body>
