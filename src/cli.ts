@@ -16,6 +16,8 @@ import {
 import { createLlmClient } from './llm/client.js'
 import { buildSystemPrompt } from './prompt.js'
 import { createBuiltinTools } from './tools/builtin.js'
+import { startWebServer } from './server/http.js'
+import { WebSession } from './server/session.js'
 import { appendTranscript } from './transcript.js'
 import type { Message, Tool } from './types.js'
 
@@ -31,6 +33,9 @@ interface Args {
   permissionMode?: string
   allowedTools: string[]
   disallowedTools: string[]
+  cli: boolean
+  port?: number
+  noOpen: boolean
   maxTurns?: number
   dangerouslySkipPermissions: boolean
 }
@@ -90,6 +95,22 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     } finally {
       rl?.close()
     }
+    return
+  }
+
+  if (!args.cli) {
+    const session = new WebSession({
+      config,
+      tools,
+      llm,
+      system,
+      version: VERSION,
+      rules,
+      autoAllow: settings.autoAllow,
+      autoSoftDeny: settings.autoSoftDeny,
+      classifier: createAutoClassifier(config),
+    })
+    await startWebServer({ session, port: args.port ?? 3080, openBrowser: !args.noOpen })
     return
   }
 
@@ -306,11 +327,14 @@ function helpText(): string {
   return `ccc ${VERSION}
 
 用法
-  ccc                         进入对话
+  ccc                         打开本地网页 http://127.0.0.1:3080
+  ccc --cli                   在终端里对话
   ccc -p "看一下这个仓库"      跑一轮然后退出
-  ccc --permission-mode plan  只读，不改文件、不跑命令
 
 选项
+  --cli                       使用终端，不打开网页
+  --port <端口>               网页端口，默认 3080
+  --no-open                   启动网页但不打开浏览器
   -p, --print <文本>          单轮任务
   --cwd <目录>                工作目录，默认当前目录
   --provider anthropic|openai
@@ -328,7 +352,15 @@ function helpText(): string {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { help: false, version: false, dangerouslySkipPermissions: false, allowedTools: [], disallowedTools: [] }
+  const args: Args = {
+    help: false,
+    version: false,
+    dangerouslySkipPermissions: false,
+    allowedTools: [],
+    disallowedTools: [],
+    cli: false,
+    noOpen: false,
+  }
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]
     const next = () => {
@@ -367,6 +399,15 @@ function parseArgs(argv: string[]): Args {
       case '--disallowed-tools':
         args.disallowedTools.push(next())
         break
+      case '--cli':
+        args.cli = true
+        break
+      case '--port':
+        args.port = Number(next())
+        break
+      case '--no-open':
+        args.noOpen = true
+        break
       case '--max-turns':
         args.maxTurns = Number(next())
         break
@@ -379,6 +420,9 @@ function parseArgs(argv: string[]): Args {
   }
   if (args.maxTurns !== undefined && (!Number.isInteger(args.maxTurns) || args.maxTurns < 1)) {
     throw new Error('--max-turns 必须是正整数')
+  }
+  if (args.port !== undefined && (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535)) {
+    throw new Error('--port 必须是 1 到 65535 的整数')
   }
   return args
 }

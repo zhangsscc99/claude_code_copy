@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ccc</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="frame">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="brand-name">ccc</span>
+        </div>
+        <button class="new-chat" id="new-chat" type="button">新对话</button>
+        <label class="field">
+          <span>权限</span>
+          <select id="mode">
+            <option value="default">default</option>
+            <option value="acceptEdits">acceptEdits</option>
+            <option value="plan">plan</option>
+            <option value="auto">auto</option>
+            <option value="dontAsk">dontAsk</option>
+            <option value="bypassPermissions">bypassPermissions</option>
+          </select>
+        </label>
+        <div class="side-meta">
+          <div class="meta-label">工作目录</div>
+          <div class="meta-value" id="cwd"></div>
+          <div class="meta-label">模型</div>
+          <div class="meta-value" id="model"></div>
+        </div>
+      </aside>
+      <main class="stage">
+        <header class="topbar">
+          <div class="top-title">对话</div>
+          <div class="top-status" id="status">就绪</div>
+        </header>
+        <section class="transcript" id="transcript" aria-live="polite"></section>
+        <form class="composer" id="composer">
+          <textarea id="input" rows="1" placeholder="描述要做的修改，回车发送"></textarea>
+          <button id="send" type="submit">发送</button>
+        </form>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

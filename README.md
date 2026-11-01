@@ -30,7 +30,8 @@ OPENAI_MODEL=deepseek-chat
 `OPENAI_BASE_URL` 指任何兼容 OpenAI Chat Completions 和 tools 的接口。
 
 ```bash
-npm run dev                         # 对话
+npm run dev                         # 打开本地网页
+npm run dev -- --cli                # 终端对话
 npm run dev -- -p "读一下 README，用三句话说明这个项目" 
 npm run dev -- --permission-mode plan
 npm test
