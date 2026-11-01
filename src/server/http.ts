@@ -7,7 +7,8 @@ import type { WebSession } from './session.js'
 
 const MAX_JSON_BYTES = 1_000_000
 const indexHtmlPath = fileURLToPath(new URL('../web/index.html', import.meta.url))
-const appCssPath = fileURLToPath(new URL('../web/app.css', import.meta.url))
+const tokensCssPath = fileURLToPath(new URL('../web/dsh-tokens.css', import.meta.url))
+const shellCssPath = fileURLToPath(new URL('../web/dsh-shell.css', import.meta.url))
 const appJsPath = fileURLToPath(new URL('../web/app.js', import.meta.url))
 
 export function startWebServer(options: {
@@ -75,8 +76,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, session: WebSes
     await serveFile(res, indexHtmlPath, 'text/html; charset=utf-8')
     return
   }
-  if (method === 'GET' && pathname === '/app.css') {
-    await serveFile(res, appCssPath, 'text/css; charset=utf-8')
+  if (method === 'GET' && pathname === '/dsh-tokens.css') {
+    await serveFile(res, tokensCssPath, 'text/css; charset=utf-8')
+    return
+  }
+  if (method === 'GET' && pathname === '/dsh-shell.css') {
+    await serveFile(res, shellCssPath, 'text/css; charset=utf-8')
     return
   }
   if (method === 'GET' && pathname === '/app.js') {
@@ -295,7 +300,8 @@ function isLocalHost(hostHeader: string | undefined, port: number): boolean {
 function knownPath(pathname: string): boolean {
   return (
     pathname === '/' ||
-    pathname === '/app.css' ||
+    pathname === '/dsh-tokens.css' ||
+    pathname === '/dsh-shell.css' ||
     pathname === '/app.js' ||
     pathname === '/api/state' ||
     pathname === '/api/events' ||
