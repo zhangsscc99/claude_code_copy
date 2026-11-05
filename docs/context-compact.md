@@ -1,6 +1,6 @@
 # 上下文压缩设计
 
-状态：待审批。这份文档通过之前，不改压缩代码。
+状态：已实现。落地位置和与设计稿的差异见文末「实现记录」。
 
 `ccc` 现在每次请求都把完整 `history` 发给模型。对话一长就会顶满窗口。这一轮按 Claude Code 主循环里的自动压缩来做：先估算 token，超过阈值就让模型把旧对话收成摘要，再用「摘要 + 必须留下的最近原文」替换发给模型的历史。磁盘上的 `.copy-agent/session.jsonl` 继续追加原文，不删。
 
@@ -17,7 +17,7 @@ Claude Code 在每次真正调用模型之前跑 `autoCompactIfNeeded`。它做�
 7. 成功后，主循环改用新的消息列表：压缩边界、摘要、需要恢复的附件。原文仍留在会话记录里。
 8. 自动压缩失败不打断用户。下一轮再试。手动 `/compact` 失败才把错误直接显示出来。
 
-源码里还有会话记忆压缩、上下文折叠、snip 和 hooks。这一轮都不做。那些是压缩之上的另一套机制。
+源码里还有会话记忆压缩、上下文折叠、snip 和 hooks。这一轮只做了压缩；折叠后来单独实现，见 `docs/context-collapse.md`，两者在运行时互斥。
 
 ## 这一轮做什么
 
@@ -129,4 +129,23 @@ Claude Code 在每次真正调用模型之前跑 `autoCompactIfNeeded`。它做�
 
 ## 审批
 
-同意这份文档之后再写代码。要改保留尾巴的长度、阈值，或网页上摘要要不要展开，直接指出哪一节。
+这份文档最初按审批流程写。实现按上面的约定落地；要改保留尾巴的长度、阈值，或网页上摘要要不要展开，直接指出哪一节。
+
+## 实现记录
+
+代码：
+
+- `src/agent/compact.ts`：阈值、估算、尾巴选择、摘要请求、PTL 重试、手动入口。
+- `src/agent/loop.ts`：每次 `llm.complete` 之前跑自动压缩；失败只记计数，不打断这一轮。
+- `src/llm/client.ts`：解析 Anthropic 和 OpenAI 兼容接口的 usage，放进 `AssistantMessage.usage`。
+- `src/cli.ts`：`/compact`；自动压缩打印「正在压缩上下文」和压缩前后估算。
+- `src/server/session.ts`、`src/server/http.ts`、`src/web/`：`POST /api/compact`、状态栏「正在压缩上下文」、右上角「压缩」按钮、成功后的 notice。
+- `src/agent/compact.test.ts`、`src/server/session.test.ts`：覆盖上面「测试」一节的条目。
+
+和设计稿的差异：
+
+- 终端没有交互式中止。`LlmClient` 目前只带 120 秒超时，没有把 Ctrl-C 传成 abort，所以「用户中止压缩」这一条暂时不会发生；失败计数只在真正失败时增加。
+- 阈值按固定常量算：摘要输出预留 20000，自动缓冲 13000，只让 `AGENT_CONTEXT_WINDOW` 改窗口。源码还会按模型的实际最大输出做 `min`，这里只接一个 provider 配置，先不做。
+- 摘要请求的 `max_tokens` 沿用主会话配置（`AGENT_MAX_TOKENS`），没有单独开到 20000，避免超过小模型的上限。
+- 网页会话也开始追加 `.copy-agent/session.jsonl`（此前只有终端写），这样压缩后仍能查原文。压缩前已经写过的内容不会被改写或删除。
+- 摘要结构按这份文档的 6 节写（源码是 9 节），仍然保留 `<analysis>` / `<summary>` 两段，分析段在落库前丢掉。

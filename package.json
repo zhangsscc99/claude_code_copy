@@ -12,7 +12,7 @@
     "start": "tsx src/index.ts",
     "build": "tsc && chmod +x dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test src/agent/loop.test.ts src/permissions.test.ts src/permissions/harness.test.ts src/server/session.test.ts src/tools/builtin.test.ts src/tools/workspace.test.ts"
+    "test": "node --import tsx --test src/agent/compact.test.ts src/agent/collapse.test.ts src/agent/loop.test.ts src/agent/trace.test.ts src/permissions.test.ts src/permissions/harness.test.ts src/server/session.test.ts src/tools/builtin.test.ts src/tools/workspace.test.ts"
   },
   "engines": {
     "node": ">=18"
@@ -21,5 +21,8 @@
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4"
   }
 }

@@ -1,6 +1,17 @@
 import { stat } from 'node:fs/promises'
 import readline from 'node:readline'
+import { compactSession, loadCompactionSettings, type CompactionSettings, type CompactionTracking } from './agent/compact.js'
+import {
+  collapseIfNeeded,
+  createCollapseStore,
+  isContextCollapseEnabled,
+  loadCollapseSettings,
+  resetCollapseStore,
+  type CollapseSettings,
+  type CollapseStore,
+} from './agent/collapse.js'
 import { runAgent } from './agent/loop.js'
+import { createTraceBusFromEnv, type TraceBus } from './agent/trace.js'
 import { loadConfig, loadDotEnv, missingKeyMessage, type Config } from './config.js'
 import { createAutoClassifier } from './permissions/classify.js'
 import { loadPermissionSettings, type LoadedSettings } from './permissions/settings.js'
@@ -18,7 +29,7 @@ import { buildSystemPrompt } from './prompt.js'
 import { createBuiltinTools } from './tools/builtin.js'
 import { startWebServer } from './server/http.js'
 import { WebSession } from './server/session.js'
-import { appendTranscript } from './transcript.js'
+import { appendCollapseCommit, appendTranscript } from './transcript.js'
 import type { Message, Tool } from './types.js'
 
 const VERSION = '0.1.0'
@@ -77,11 +88,21 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const llm = createLlmClient(config)
   const system = buildSystemPrompt(config.cwd)
   const history: Message[] = []
+  const compaction = {
+    settings: loadCompactionSettings(),
+    tracking: { consecutiveFailures: 0 },
+  }
+  const collapse = {
+    settings: loadCollapseSettings(),
+    store: createCollapseStore(),
+    enabled: isContextCollapseEnabled(),
+  }
   const rules = [
     ...settings.rules,
     ...cliRules(args.allowedTools, 'allow'),
     ...cliRules(args.disallowedTools, 'deny'),
   ]
+  const trace = createTraceBusFromEnv()
 
   if (args.print !== undefined) {
     const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY)
@@ -90,10 +111,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       : undefined
     const gate = createGate(config, settings, rules, rl ? (tool, input, detail) => askOn(rl, tool.name, input, detail) : denyAsk, !interactive)
     try {
-      const code = await runTurn({ config, tools, llm, system, history, gate, userText: args.print })
+      const code = await runTurn({ config, tools, llm, system, history, gate, userText: args.print, compaction, collapse, trace })
       if (code !== 0) process.exitCode = code
     } finally {
       rl?.close()
+      await trace?.close()
     }
     return
   }
@@ -109,12 +131,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       autoAllow: settings.autoAllow,
       autoSoftDeny: settings.autoSoftDeny,
       classifier: createAutoClassifier(config),
+      trace,
     })
     await startWebServer({ session, port: args.port ?? 3080, openBrowser: !args.noOpen })
     return
   }
 
-  await repl({ config, settings, rules, tools, llm, system, history })
+  await repl({ config, settings, rules, tools, llm, system, history, compaction, collapse, trace })
 }
 
 function applyArgs(config: Config, args: Args): void {
@@ -153,6 +176,9 @@ async function repl(options: {
   llm: ReturnType<typeof createLlmClient>
   system: string
   history: Message[]
+  compaction: { settings: CompactionSettings; tracking: CompactionTracking }
+  collapse: { settings: CollapseSettings; store: CollapseStore; enabled: boolean }
+  trace?: TraceBus
 }): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   let closed = false
@@ -173,7 +199,17 @@ async function repl(options: {
       }
       if (line === '/clear') {
         options.history.length = 0
+        options.compaction.tracking.consecutiveFailures = 0
+        resetCollapseStore(options.collapse.store)
         process.stdout.write('会话已清空。\n')
+        continue
+      }
+      if (line === '/compact') {
+        await compactInRepl(options)
+        continue
+      }
+      if (line === '/collapse') {
+        await collapseInRepl(options)
         continue
       }
       if (line === '/tools') {
@@ -197,6 +233,72 @@ async function repl(options: {
     }
   } finally {
     rl.close()
+    await options.trace?.close()
+  }
+}
+
+async function compactInRepl(options: {
+  config: Config
+  llm: ReturnType<typeof createLlmClient>
+  system: string
+  history: Message[]
+  compaction: { settings: CompactionSettings; tracking: CompactionTracking }
+  collapse: { settings: CollapseSettings; store: CollapseStore; enabled: boolean }
+}): Promise<void> {
+  process.stdout.write('正在压缩上下文\n')
+  try {
+    const outcome = await compactSession({
+      history: options.history,
+      system: options.system,
+      llm: options.llm,
+      model: options.config.model,
+      settings: options.compaction.settings,
+      tracking: options.compaction.tracking,
+    })
+    resetCollapseStore(options.collapse.store)
+    process.stdout.write(`已压缩：${outcome.before} → ${outcome.after} 估算 token。\n`)
+    try {
+      await appendTranscript(options.config.cwd, [outcome.boundary, outcome.summaryMessage])
+    } catch {
+      process.stderr.write('会话记录没有写进 .copy-agent/session.jsonl\n')
+    }
+  } catch (error) {
+    process.stdout.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  }
+}
+
+async function collapseInRepl(options: {
+  config: Config
+  llm: ReturnType<typeof createLlmClient>
+  system: string
+  history: Message[]
+  collapse: { settings: CollapseSettings; store: CollapseStore; enabled: boolean }
+}): Promise<void> {
+  if (!options.collapse.enabled) {
+    process.stdout.write('上下文折叠没有开启：设置 AGENT_CONTEXT_COLLAPSE=1。\n')
+    return
+  }
+  process.stdout.write('正在折叠上下文\n')
+  try {
+    const outcome = await collapseIfNeeded({
+      history: options.history,
+      system: options.system,
+      llm: options.llm,
+      model: options.config.model,
+      store: options.collapse.store,
+      settings: options.collapse.settings,
+      mode: 'manual',
+      onCommit: (commit) => appendCollapseCommit(options.config.cwd, commit),
+    })
+    if (!outcome) {
+      process.stdout.write('还没有可以折叠的完整轮次。\n')
+      return
+    }
+    process.stdout.write(
+      `已折叠 ${outcome.commits.length} 段：${outcome.before} → ${outcome.after} 估算 token。\n`,
+    )
+  } catch (error) {
+    process.stdout.write(`${error instanceof Error ? error.message : String(error)}\n`)
   }
 }
 
@@ -208,8 +310,10 @@ async function runTurn(options: {
   history: Message[]
   gate: PermissionGate
   userText: string
+  compaction: { settings: CompactionSettings; tracking: CompactionTracking }
+  collapse: { settings: CollapseSettings; store: CollapseStore; enabled: boolean }
+  trace?: TraceBus
 }): Promise<number> {
-  const before = options.history.length
   const result = await runAgent({
     history: options.history,
     userText: options.userText,
@@ -220,6 +324,9 @@ async function runTurn(options: {
     maxTurns: options.config.maxTurns,
     cwd: options.config.cwd,
     model: options.config.model,
+    compaction: options.compaction,
+    collapse: options.collapse,
+    trace: options.trace,
     hooks: {
       onAssistantText(text) {
         process.stdout.write(`\n${text}\n`)
@@ -231,10 +338,28 @@ async function runTurn(options: {
         const first = output.split('\n')[0] ?? ''
         process.stdout.write(`  ${isError ? '失败' : '完成'} ${first.slice(0, 180)}\n`)
       },
+      onCompactStart(reason) {
+        if (reason === 'auto') process.stdout.write('\n正在压缩上下文\n')
+      },
+      onCompactEnd({ reason, before, after }) {
+        if (reason === 'auto') process.stdout.write(`上下文已压缩：${before} → ${after} 估算 token\n`)
+      },
+      onCompactError(reason, message) {
+        process.stderr.write(`上下文压缩失败（${reason === 'auto' ? '自动' : '手动'}）：${message}\n`)
+      },
+      onCollapseStart(reason) {
+        if (reason === 'auto') process.stdout.write('\n正在折叠上下文\n')
+      },
+      onCollapseEnd({ reason, commits, before, after }) {
+        process.stdout.write(`上下文已折叠：${commits} 段，${before} → ${after} 估算 token（${reason === 'overflow' ? '溢出恢复' : '自动'}）\n`)
+      },
+      onCollapseError(reason, message) {
+        process.stderr.write(`上下文折叠失败（${reason === 'overflow' ? '溢出恢复' : '自动'}）：${message}\n`)
+      },
     },
   })
   try {
-    await appendTranscript(options.config.cwd, options.history.slice(before))
+    await appendTranscript(options.config.cwd, result.produced)
   } catch {
     process.stderr.write('会话记录没有写进 .copy-agent/session.jsonl\n')
   }
@@ -317,6 +442,8 @@ function slashHelp(): string {
     '/help     显示命令',
     '/tools    列出工具',
     '/mode     default | acceptEdits | plan | bypassPermissions | dontAsk | auto',
+    '/compact  把较早的对话收成摘要，保留最近的来回',
+    '/collapse 把较早的完整轮次折叠成占位摘要（需 AGENT_CONTEXT_COLLAPSE=1）',
     '/clear    清空这次会话',
     '/exit     退出',
     '',
@@ -347,7 +474,25 @@ function helpText(): string {
   -h, --help
   -v, --version
 
-环境变量见 .env.example。规则见 docs/permission-harness.md。
+上下文压缩
+  AGENT_CONTEXT_WINDOW=128000   上下文长度，自动阈值 = 窗口 - 20000 - 13000
+  DISABLE_AUTO_COMPACT=1        只关掉自动压缩，/compact 仍可用
+  DISABLE_COMPACT=1             自动和手动都停
+
+上下文折叠
+  AGENT_CONTEXT_COLLAPSE=1      开启折叠：90% 起折叠旧轮次，95% 强制排空
+  DISABLE_COLLAPSE=1            关闭折叠
+  折叠和自动压缩互斥；413 时先折叠，折叠不了再回落到压缩
+
+链路追踪
+  AGENT_TRACE=0                 关闭遥测（默认开）
+  AGENT_TRACE_URL=...           collector 地址，默认 http://127.0.0.1:4120
+  AGENT_TRACE_BROKERS=k1:9092   直连 Kafka（优先于 URL），topic 用 AGENT_TRACE_TOPIC
+  AGENT_TRACE_QUEUE_SIZE=2048   有界队列，满了丢弃最旧的 span
+  AGENT_TRACE_BATCH_SIZE=50     一批最多多少 span
+  AGENT_TRACE_FLUSH_MS=2000     批量发送的最长等待
+
+环境变量见 .env.example。规则见 docs/permission-harness.md，压缩见 docs/context-compact.md，折叠见 docs/context-collapse.md。
 `
 }
 

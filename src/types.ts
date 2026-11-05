@@ -17,8 +17,19 @@ export type ToolResultBlock = {
 export type AssistantContent = TextBlock | ToolUseBlock
 export type UserContent = TextBlock | ToolResultBlock
 
-export type UserMessage = { role: 'user'; content: UserContent[] }
-export type AssistantMessage = { role: 'assistant'; content: AssistantContent[] }
+/**
+ * Corpus size reported by one API response. Input already includes cache reads
+ * and cache writes. Kept on the assistant message so the next turn can measure
+ * the context without re-tokenizing the whole history.
+ */
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens?: number
+}
+
+/** Optional stable id; collapse commits reference spans by id as well as index. */
+export type UserMessage = { role: 'user'; content: UserContent[]; id?: string }
+export type AssistantMessage = { role: 'assistant'; content: AssistantContent[]; usage?: TokenUsage; id?: string }
 export type Message = UserMessage | AssistantMessage
 
 export interface ToolInputSchema {

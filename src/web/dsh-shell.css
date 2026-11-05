@@ -255,6 +255,7 @@ select {
 .sessionItem,
 .toolRow,
 .send,
+.compactBtn,
 .permissionActions button {
   appearance: none;
 }
@@ -472,6 +473,40 @@ select.modeField,
   color: var(--dsw-alias-label-tertiary);
   font-size: var(--dsh-content-font-size-secondary, 13px);
   font-weight: 400;
+}
+
+.topbarActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.compactBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 12px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .compactBtn:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.compactBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .transcript {

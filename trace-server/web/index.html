@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ccc trace</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">ccc trace</div>
+    <div id="stats" class="stats"></div>
+  </header>
+  <main>
+    <aside id="trace-list">
+      <div class="aside-title">traces</div>
+      <ul id="traces"></ul>
+    </aside>
+    <section id="detail">
+      <div id="empty" class="empty">选择左边的一条 trace 查看瀑布时间轴</div>
+      <div id="waterfall" hidden>
+        <div id="trace-meta"></div>
+        <div id="rows"></div>
+      </div>
+      <div id="span-detail" hidden></div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

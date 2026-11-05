@@ -7,9 +7,11 @@ const cwd = document.querySelector('#cwd')
 const model = document.querySelector('#model')
 const status = document.querySelector('#status')
 const newChat = document.querySelector('#new-chat')
+const compactButton = document.querySelector('#compact')
+const collapseButton = document.querySelector('#collapse')
 
 const NEAR_BOTTOM = 80
-const state = { items: [], busy: false, mode: 'default' }
+const state = { items: [], busy: false, compacting: false, collapsing: false, mode: 'default' }
 let sending = false
 
 boot().catch((error) => setStatus(error instanceof Error ? error.message : String(error)))
@@ -20,6 +22,8 @@ async function boot() {
   const body = await response.json()
   state.items = Array.isArray(body.timeline) ? body.timeline : []
   state.busy = Boolean(body.busy)
+  state.compacting = Boolean(body.compacting)
+  state.collapsing = Boolean(body.collapsing)
   state.mode = body.permissionMode
   cwd.textContent = body.cwd ?? ''
   cwd.title = cwd.textContent
@@ -47,11 +51,19 @@ function listen() {
 function apply(event) {
   if (!event || typeof event !== 'object') return false
   if (event.type === 'ready') {
-    setStatus(state.busy ? '处理中' : '就绪')
+    setStatus(state.collapsing ? '正在折叠上下文' : state.busy ? '处理中' : '就绪')
     return false
   }
   if (event.type === 'busy') {
     state.busy = Boolean(event.busy)
+    return true
+  }
+  if (event.type === 'compacting') {
+    state.compacting = Boolean(event.compacting)
+    return true
+  }
+  if (event.type === 'collapsing') {
+    state.collapsing = Boolean(event.collapsing)
     return true
   }
   if (event.type === 'mode') {
@@ -136,10 +148,13 @@ function render() {
     for (const item of state.items) column.append(renderItem(item))
   }
   transcript.append(column)
-  input.disabled = state.busy
-  send.disabled = state.busy
-  newChat.disabled = state.busy
-  setStatus(state.busy ? '处理中' : '就绪')
+  const locked = state.busy || state.compacting || state.collapsing
+  input.disabled = locked
+  send.disabled = locked
+  newChat.disabled = locked
+  compactButton.disabled = locked
+  collapseButton.disabled = locked
+  setStatus(state.compacting ? '正在压缩上下文' : state.collapsing ? '正在折叠上下文' : state.busy ? '处理中' : '就绪')
   transcript.scrollTop = stick ? transcript.scrollHeight : previousTop
 }
 
@@ -345,6 +360,16 @@ mode.addEventListener('change', () => {
 newChat.addEventListener('click', () => {
   if (state.busy || newChat.disabled) return
   fetch('/api/clear', { method: 'POST' })
+})
+
+compactButton.addEventListener('click', () => {
+  if (state.busy || state.compacting || state.collapsing) return
+  fetch('/api/compact', { method: 'POST' })
+})
+
+collapseButton.addEventListener('click', () => {
+  if (state.busy || state.compacting || state.collapsing) return
+  fetch('/api/collapse', { method: 'POST' })
 })
 
 function growInput() {

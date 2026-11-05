@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
+import { createCollapseStore, type CollapseSettings, type CollapseStore } from '../agent/collapse.js'
 import type { Config } from '../config.js'
 import { createBuiltinTools } from '../tools/builtin.js'
-import type { AssistantMessage, LlmClient } from '../types.js'
+import type { AssistantMessage, LlmClient, LlmRequest, Message } from '../types.js'
 import { WebSession, type SessionEvent } from './session.js'
 
 test('default mode asks, then records the allowed bash turn', async () => {
@@ -60,6 +61,61 @@ test('default mode asks, then records the allowed bash turn', async () => {
     assert.equal(permission.status, 'once')
     assert.equal(events.at(-1)?.type, 'busy')
     assert.equal(events.at(-1)?.type === 'busy' && events.at(-1)?.busy, false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('web collapse folds a closed turn and the next request uses the placeholder', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'ccc-web-collapse-'))
+  try {
+    const requests: LlmRequest[] = []
+    const llm: LlmClient = {
+      async complete(request) {
+        requests.push(structuredClone(request))
+        const last = request.messages.at(-1)
+        if (last && /CRITICAL: Respond with TEXT ONLY/.test(textOf(last))) {
+          return assistant([{ type: 'text', text: '<summary>OLD TURNS</summary>' }])
+        }
+        return assistant([{ type: 'text', text: `answer ${requests.length}` }])
+      },
+    }
+    const session = makeSession(dir, llm, 4, undefined, {
+      enabled: true,
+      settings: {
+        contextWindow: 128_000,
+        summaryReserve: 20_000,
+        startRatio: 0.9,
+        hardRatio: 0.95,
+        targetRatio: 0.8,
+        keepTurns: 1,
+      },
+      store: createCollapseStore(),
+    })
+
+    await session.send('first task')
+    await session.send('second task')
+    await session.collapseNow()
+
+    const state = session.getState()
+    assert.equal(state.busy, false)
+    assert.equal(state.collapsing, false)
+    assert.equal(state.collapse.enabled, true)
+    assert.equal(state.collapse.commits, 1)
+    assert.ok(
+      state.timeline.some((item) => item.kind === 'notice' && /上下文已折叠：1 段/.test(item.text)),
+    )
+
+    await session.send('third task')
+    const main = requests
+      .filter((request) => {
+        const last = request.messages.at(-1)
+        return !(last && /CRITICAL: Respond with TEXT ONLY/.test(textOf(last)))
+      })
+      .at(-1)!
+    assert.match(textOf(main.messages[0] as Message), /^<collapsed id="c1">/)
+    assert.equal(main.messages.some((message) => textOf(message) === 'first task'), false)
+    assert.equal(textOf(main.messages.at(-1) as Message), 'third task')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -175,13 +231,138 @@ test('notices, mode, and previews follow the session rules', async () => {
   }
 })
 
-function makeSession(cwd: string, llm: LlmClient, maxTurns = 4): WebSession {
+test('manual compaction replaces history and reports tokens as notices', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'ccc-web-compact-'))
+  try {
+    const requests: LlmRequest[] = []
+    let calls = 0
+    const llm: LlmClient = {
+      async complete(request) {
+        requests.push({ ...request, messages: structuredClone(request.messages) })
+        calls += 1
+        if (calls === 1) return assistant([{ type: 'text', text: 'hello' }])
+        if (calls === 2) return assistant([{ type: 'text', text: '<analysis>draft</analysis><summary>WEB_SUMMARY</summary>' }])
+        return assistant([{ type: 'text', text: 'next' }])
+      },
+    }
+    const session = makeSession(dir, llm)
+    const events: SessionEvent[] = []
+    session.subscribe((event) => events.push(event))
+
+    await session.send('hi')
+    await session.compact()
+
+    const state = session.getState()
+    assert.equal(state.busy, false)
+    assert.equal(state.compacting, false)
+    const notices = state.timeline.flatMap((item) => (item.kind === 'notice' ? [item.text] : []))
+    assert.ok(notices.includes('正在压缩上下文'))
+    assert.ok(notices.some((text) => text.includes('上下文已压缩') && text.includes('→')))
+    assert.equal(events.some((event) => event.type === 'compacting' && event.compacting), true)
+    assert.equal(events.at(-1)?.type, 'busy')
+
+    await session.send('next')
+    const last = requests.at(-1)
+    assert.ok(last)
+    assert.match(textOf(last.messages[0] as Message), /^\[compacted\].*手动压缩/)
+    assert.match(textOf(last.messages[1] as Message), /WEB_SUMMARY/)
+    assert.equal(textOf(last.messages[2] as Message), 'next')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('compact refuses while a turn is running', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'ccc-web-compact-busy-'))
+  try {
+    let release: ((message: AssistantMessage) => void) | undefined
+    const session = makeSession(dir, {
+      complete() {
+        return new Promise<AssistantMessage>((resolve) => {
+          release = resolve
+        })
+      },
+    })
+    const pending = session.send('hi')
+    assert.throws(() => session.compact(), /正在处理上一条消息/)
+    assert.ok(release)
+    release({ role: 'assistant', content: [{ type: 'text', text: 'ok' }] })
+    await pending
+    assert.equal(session.getState().compacting, false)
+    assert.equal(session.getState().busy, false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('auto compaction shows the status, leaves notices, and hides the summary', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'ccc-web-auto-compact-'))
+  try {
+    await writeFile(path.join(dir, 'big.txt'), 'r'.repeat(10_000))
+    const requests: LlmRequest[] = []
+    let calls = 0
+    const llm: LlmClient = {
+      async complete(request) {
+        requests.push({ ...request, messages: structuredClone(request.messages) })
+        calls += 1
+        if (calls === 1) return assistant([{ type: 'text', text: 'a'.repeat(20_000) }])
+        if (calls === 2) {
+          return assistant([{ type: 'tool_use', id: 't1', name: 'read_file', input: { path: 'big.txt' } }])
+        }
+        if (calls === 3) return assistant([{ type: 'text', text: '<analysis>draft</analysis><summary>AUTO_WEB</summary>' }])
+        return assistant([{ type: 'text', text: 'done' }])
+      },
+    }
+    const session = makeSession(dir, llm, 4, {
+      contextWindow: 40_000,
+      summaryReserve: 20_000,
+      autoBuffer: 13_000,
+    })
+    const events: SessionEvent[] = []
+    session.subscribe((event) => events.push(event))
+
+    await session.send('hi')
+    await session.send('again')
+
+    const state = session.getState()
+    assert.equal(calls, 4)
+    assert.equal(state.busy, false)
+    assert.equal(state.compacting, false)
+    assert.equal(events.some((event) => event.type === 'compacting' && event.compacting), true)
+    const notices = state.timeline.flatMap((item) => (item.kind === 'notice' ? [item.text] : []))
+    assert.ok(notices.includes('正在压缩上下文'))
+    assert.ok(notices.some((text) => text.includes('上下文已压缩')))
+    assert.equal(
+      state.timeline.some((item) => item.kind === 'assistant' && item.text.includes('AUTO_WEB')),
+      false,
+    )
+
+    const final = requests.at(-1)
+    assert.ok(final)
+    assert.match(textOf(final.messages[0] as Message), /^\[compacted\].*自动压缩/)
+    assert.match(textOf(final.messages[1] as Message), /AUTO_WEB/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+function makeSession(cwd: string, llm: LlmClient, maxTurns = 4, compaction?: {
+  contextWindow: number
+  summaryReserve: number
+  autoBuffer: number
+}, collapse?: {
+  enabled?: boolean
+  settings?: CollapseSettings
+  store?: CollapseStore
+}): WebSession {
   return new WebSession({
     config: testConfig(cwd, maxTurns),
     tools: createBuiltinTools(),
     llm,
     system: 'test',
     version: '0.1.0',
+    compaction: compaction ? { settings: compaction, tracking: { consecutiveFailures: 0 } } : undefined,
+    collapse,
   })
 }
 
@@ -212,4 +393,11 @@ function scripted(responses: AssistantMessage[]): LlmClient {
 
 function assistant(content: AssistantMessage['content']): AssistantMessage {
   return { role: 'assistant', content }
+}
+
+function textOf(message: Message): string {
+  return message.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
 }

@@ -1,0 +1,25 @@
+{
+  "name": "ccc-trace-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Trace collector: ingest spans, stream-aggregate, expose REST/SSE and a waterfall UI.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "kafka:up": "docker compose up -d kafka",
+    "kafka:down": "docker compose down"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

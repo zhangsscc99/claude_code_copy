@@ -3,3 +3,7 @@ dist/
 .copy-agent/
 .env
 .ccc/settings.local.json
+
+trace-server/node_modules/
+trace-server/data/
+trace-server/dist/

@@ -104,6 +104,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, session: WebSes
     await postPermission(req, res, session)
     return
   }
+  if (method === 'POST' && pathname === '/api/compact') {
+    await postCompact(req, res, session)
+    return
+  }
+  if (method === 'POST' && pathname === '/api/collapse') {
+    await postCollapse(req, res, session)
+    return
+  }
   if (method === 'POST' && pathname === '/api/mode') {
     await postMode(req, res, session)
     return
@@ -198,6 +206,38 @@ async function postPermission(req: IncomingMessage, res: ServerResponse, session
     return
   }
   sendJson(res, 200, { ok: true })
+}
+
+async function postCompact(req: IncomingMessage, res: ServerResponse, session: WebSession): Promise<void> {
+  await readBody(req)
+  let pending: Promise<void>
+  try {
+    pending = session.compact()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    sendJson(res, 409, { error: message })
+    return
+  }
+  pending.catch(() => {
+    // Failures are already stored as notices.
+  })
+  sendJson(res, 202, { ok: true })
+}
+
+async function postCollapse(req: IncomingMessage, res: ServerResponse, session: WebSession): Promise<void> {
+  await readBody(req)
+  let pending: Promise<void>
+  try {
+    pending = session.collapseNow()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    sendJson(res, 409, { error: message })
+    return
+  }
+  pending.catch(() => {
+    // Failures are already stored as notices.
+  })
+  sendJson(res, 202, { ok: true })
 }
 
 async function postMode(req: IncomingMessage, res: ServerResponse, session: WebSession): Promise<void> {
@@ -307,6 +347,8 @@ function knownPath(pathname: string): boolean {
     pathname === '/api/events' ||
     pathname === '/api/messages' ||
     pathname === '/api/permissions' ||
+    pathname === '/api/compact' ||
+    pathname === '/api/collapse' ||
     pathname === '/api/mode' ||
     pathname === '/api/clear'
   )

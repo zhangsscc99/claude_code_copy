@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import type { AssistantContent, AssistantMessage, LlmClient, LlmRequest, Message } from '../types.js'
+import type {
+  AssistantContent,
+  AssistantMessage,
+  LlmClient,
+  LlmRequest,
+  Message,
+  TokenUsage,
+} from '../types.js'
 
 export function createLlmClient(options: {
   provider: 'anthropic' | 'openai'
@@ -39,7 +46,7 @@ async function completeAnthropic(
       model,
       max_tokens: maxTokens,
       system: request.system,
-      messages: request.messages.map(toAnthropicMessage),
+      messages: mergeAdjacentRoles(request.messages).map(toAnthropicMessage),
       tools: request.tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -49,8 +56,11 @@ async function completeAnthropic(
   })
   const body = await readBody(response)
   if (!response.ok) throw new Error(`Anthropic API ${response.status}: ${snippet(body)}`)
-  const parsed = JSON.parse(body) as { content?: unknown[] }
-  return { role: 'assistant', content: anthropicContent(parsed.content) }
+  const parsed = JSON.parse(body) as { content?: unknown[]; usage?: unknown }
+  const message: AssistantMessage = { role: 'assistant', content: anthropicContent(parsed.content) }
+  const usage = tokenUsage(parsed.usage)
+  if (usage) message.usage = usage
+  return message
 }
 
 async function completeOpenAI(
@@ -90,10 +100,46 @@ async function completeOpenAI(
         tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
       }
     }>
+    usage?: unknown
   }
   const message = parsed.choices?.[0]?.message
   if (!message) throw new Error(`OpenAI API returned no message: ${snippet(body)}`)
-  return { role: 'assistant', content: openAIContent(message) }
+  const assistant: AssistantMessage = { role: 'assistant', content: openAIContent(message) }
+  const usage = tokenUsage(parsed.usage)
+  if (usage) assistant.usage = usage
+  return assistant
+}
+
+/**
+ * The projected collapse view puts a summary placeholder directly before the
+ * next real user turn, and compaction can emit boundary + summary back to back.
+ * Anthropic wants alternating roles, so combine same-role neighbours (the same
+ * normalization the reference source calls mergeUserMessages).
+ */
+export function mergeAdjacentRoles(messages: Message[]): Message[] {
+  const merged: Message[] = []
+  for (const message of messages) {
+    const previous = merged[merged.length - 1]
+    if (!previous || previous.role !== message.role) {
+      merged.push(message)
+      continue
+    }
+    if (previous.role === 'user' && message.role === 'user') {
+      merged[merged.length - 1] = {
+        role: 'user',
+        content: [...previous.content, ...message.content],
+        ...(previous.id ? { id: previous.id } : {}),
+      }
+    } else if (previous.role === 'assistant' && message.role === 'assistant') {
+      merged[merged.length - 1] = {
+        role: 'assistant',
+        content: [...previous.content, ...message.content],
+        ...(message.usage ? { usage: message.usage } : previous.usage ? { usage: previous.usage } : {}),
+        ...(previous.id ? { id: previous.id } : {}),
+      }
+    }
+  }
+  return merged
 }
 
 function toAnthropicMessage(message: Message): unknown {
@@ -204,6 +250,28 @@ function parseArguments(raw: string | undefined): Record<string, unknown> {
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   return value as Record<string, unknown>
+}
+
+/**
+ * Reads usage from both providers. Anthropic reports the cached part
+ * separately; OpenAI-compatible endpoints already fold it into prompt_tokens.
+ */
+function tokenUsage(raw: unknown): TokenUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const record = raw as Record<string, unknown>
+  const input = numberOrUndefined(record.input_tokens) ?? numberOrUndefined(record.prompt_tokens)
+  const output = numberOrUndefined(record.output_tokens) ?? numberOrUndefined(record.completion_tokens)
+  if (input === undefined && output === undefined) return undefined
+  const cacheRead = numberOrUndefined(record.cache_read_input_tokens) ?? 0
+  const cacheWrite = numberOrUndefined(record.cache_creation_input_tokens) ?? 0
+  return {
+    inputTokens: (input ?? 0) + cacheRead + cacheWrite,
+    ...(output === undefined ? {} : { outputTokens: output }),
+  }
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
 function chatCompletionsUrl(baseUrl: string): string {
